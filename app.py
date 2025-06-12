@@ -4,8 +4,12 @@ import requests
 import openai
 import os
 
-# Load OpenAI key from Streamlit secrets
-openai.api_key = st.secrets["openai_api_key"]
+# Set your OpenAI API key from Streamlit secrets
+try:
+    openai.api_key = st.secrets["openai_api_key"]
+except KeyError:
+    st.error("OpenAI API key not found in Streamlit secrets. Please add it to .streamlit/secrets.toml")
+    st.stop()
 
 API_URL = "https://sentiment-api-1081516136341.us-central1.run.app/predict"
 
@@ -32,8 +36,10 @@ if file1 is not None:
             res.raise_for_status()
             predictions = res.json()
             sentiment_df = pd.DataFrame(predictions)
-            sentiment_df.rename(columns={"sentiment": "predicted_sentiment"}, inplace=True)
-            df_with_sentiment = pd.concat([df1.reset_index(drop=True), sentiment_df[["predicted_sentiment", "confidence"]]], axis=1)
+            df_with_sentiment = pd.concat([
+                df1.reset_index(drop=True),
+                sentiment_df[["sentiment", "confidence"]].rename(columns={"sentiment": "predicted_sentiment"})
+            ], axis=1)
 
             st.subheader("Predicted Sentiments")
             st.dataframe(df_with_sentiment.head(10))
@@ -41,13 +47,13 @@ if file1 is not None:
         except Exception as e:
             st.error(f"API error: {e}")
 
-# STEP 2: Upload final CSV (region, topic, predicted_sentiment, comment)
+# STEP 2: Upload final CSV (region, topic, sentiment, comment)
 st.header("Step 2: Upload Final CSV for Analysis")
-file2 = st.file_uploader("Upload CSV with 'region', 'topic', 'predicted_sentiment', 'comment'", type="csv", key="upload2")
+file2 = st.file_uploader("Upload CSV with 'region', 'topic', 'sentiment', 'comment'", type="csv", key="upload2")
 
 if file2 is not None:
     df2 = pd.read_csv(file2)
-    required_cols = {"region", "topic", "predicted_sentiment", "comment"}
+    required_cols = {"region", "topic", "sentiment", "comment"}
     if not required_cols.issubset(df2.columns):
         st.error(f"CSV must include: {', '.join(required_cols)}")
     else:
@@ -63,8 +69,8 @@ if file2 is not None:
                 st.markdown(f"**🌍 Region: {region}**")
 
                 total = len(region_df)
-                pos = region_df[region_df["predicted_sentiment"] == "positive"]
-                neg = region_df[region_df["predicted_sentiment"] == "negative"]
+                pos = region_df[region_df["sentiment"] == "positive"]
+                neg = region_df[region_df["sentiment"] == "negative"]
                 pos_count = len(pos)
                 neg_count = len(neg)
 
