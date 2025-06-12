@@ -5,13 +5,42 @@ import openai
 import os
 
 # Ensure helper summary functions are defined
-# Paste your `generate_region_summary_name` and `generate_actionable_summary_openai` definitions below,
-# or import them from the module/file where you've implemented them.
-# Example:
-# def generate_region_summary_name(comments: List[str], region: str) -> str:
-#     ...
-# def generate_actionable_summary_openai(comment_tuples: List[Tuple[int, str]]) -> str:
-#     ...
+from typing import List, Tuple
+
+def generate_region_summary_name(comments: List[str], region: str) -> str:
+    """
+    Create a concise summary title for a region based on its comments.
+    """
+    # You can customize this naming logic as needed
+    return f"Key themes in {region}"
+
+
+def generate_actionable_summary_openai(comment_tuples: List[Tuple[int, str]]) -> str:
+    """
+    Generate an actionable summary from a list of (comment_id, comment) tuples using OpenAI.
+    """
+    # Format comments with IDs
+    texts = "
+".join(f"[{cid}] {text}" for cid, text in comment_tuples)
+    prompt = (
+        "You are an expert analyst. Given the following feedback comments labeled by ID:
+"
+        f"{texts}
+
+"
+        "Please provide a concise, actionable summary that references the comment IDs in brackets."
+    )
+    # Call OpenAI ChatCompletion for richer summaries
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You summarize user feedback into actionable insights."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=200,
+        temperature=0.7
+    )
+    return response.choices[0].message.content.strip()
 
 # Set your OpenAI API key from Streamlit secrets
 try:
