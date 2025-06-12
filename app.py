@@ -104,8 +104,7 @@ if file1 is not None:
 # STEP 2: Upload final CSV (region, topic, sentiment, comment)
 st.header("Step 2: Upload Final CSV for Analysis")
 file2 = st.file_uploader(
-    "Upload CSV with 'region', 'topic', 'sentiment', 'comment', optional 'comment_id'",
-    type="csv", key="upload2"
+    "Upload CSV with 'region', 'topic', 'sentiment', 'comment', optional 'comment_id'", type="csv", key="upload2"
 )
 
 if file2 is not None:
@@ -114,94 +113,109 @@ if file2 is not None:
     if not all(col in df.columns for col in required_cols):
         st.error(f"❌ Missing required columns: {required_cols}")
     else:
-        st.success("File loaded. Generating detailed regional summary tables...")
+        st.success("File loaded. Generating detailed regional summary tables and appendix...")
 
-        # Clean and assign IDs
+        # Ensure required columns are strings to avoid errors
         for col in required_cols:
             df[col] = df[col].astype(str).fillna('').str.strip()
+        # Assign unique IDs if not present
         if 'comment_id' not in df.columns:
             df.insert(0, 'comment_id', range(1, len(df) + 1))
         else:
             df['comment_id'] = df['comment_id'].astype(int)
 
-        # Filter sentiments and set cluster
+        # Filter out uncertain, keep positive/negative for tables
         df_filtered = df[df['sentiment'].isin(['positive', 'negative', 'neutral'])].copy()
+        # Use region as cluster
         df_filtered['cluster'] = df_filtered['region'].fillna('Unknown')
 
-        # Table styling
-        css = """
-        <style>
+        # Add CSS for left-aligned tables
+        css_style = '''<style>
             table { border-collapse: collapse; width: 100%; text-align: left; }
             th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; text-align: left; }
             th { background-color: #f2f2f2; }
-        </style>
-        """
-        st.markdown(css, unsafe_allow_html=True)
+        </style>'''
+        st.markdown(css_style, unsafe_allow_html=True)
 
-        all_tables = []
+        all_tables_data = []
+        # Granular Analysis: region-based
         for topic in sorted(df_filtered['topic'].unique()):
-            st.markdown("---")
-            st.markdown(f"### 🗂️ Topic: {topic}")
-            topic_df = df_filtered[df_filtered['topic'] == topic]
+            topic_df = df_filtered[df_filtered['topic'] == topic].copy()
+            # Table header info
+            pos_count = topic_df[topic_df['sentiment'] == 'positive'].shape[0]
+            neg_count = topic_df[topic_df['sentiment'] == 'negative'].shape[0]
+            total = pos_count + neg_count
+            fav_pct = (pos_count / total) * 100 if total > 0 else 0
 
-            # Overall metrics
-            pos_total = topic_df[topic_df['sentiment']=='positive'].shape[0]
-            neg_total = topic_df[topic_df['sentiment']=='negative'].shape[0]
-            total = pos_total + neg_total
-            fav_pct = (pos_total / total * 100) if total > 0 else 0
-            st.write(
-                f"**Overall Topic Summary:** {fav_pct:.2f}% favourable (n={total}) | "
-                f"Positive: {pos_total} | Negative: {neg_total}"
-            )
+            # Build table_data rows
+            table_data = []
+            table_data.append(["Overall Topic Summary", f"{fav_pct:.2f}% (n={total})", f"Positive: {pos_count}", f"Negative: {neg_count}"])
+            table_data.append(["Region", "Sentiment Breakdown", "Positive Sentiment Analysis", "Negative Sentiment Analysis"])
 
-            # Table rows
-            rows = []
-            for region in sorted(topic_df['region'].unique()):
-                r_df = topic_df[topic_df['region'] == region]
-                r_pos = r_df[r_df['sentiment']=='positive']
-                r_neg = r_df[r_df['sentiment']=='negative']
+            regions = sorted(topic_df['region'].unique())
+            for region in regions:
+                region_df = topic_df[topic_df['region'] == region].copy()
+                r_pos = region_df[region_df['sentiment'] == 'positive']
+                r_neg = region_df[region_df['sentiment'] == 'negative']
                 r_tot = len(r_pos) + len(r_neg)
                 if r_tot == 0:
                     continue
-                r_pos_pct = len(r_pos)/r_tot*100
-                r_neg_pct = len(r_neg)/r_tot*100
-
+                r_pos_pct = (len(r_pos) / r_tot) * 100
+                r_neg_pct = (len(r_neg) / r_tot) * 100
                 # Summaries
-                pos_comm = [(int(cid), txt) for cid, txt in zip(r_pos['comment_id'], r_pos['comment'])]
-                neg_comm = [(int(cid), txt) for cid, txt in zip(r_neg['comment_id'], r_neg['comment'])]
-                pos_summary = generate_actionable_summary_openai(pos_comm) if pos_comm else ''
-                neg_summary = generate_actionable_summary_openai(neg_comm) if neg_comm else ''
+                pos_comments = list(zip(r_pos['comment_id'], r_pos['comment']))
+                neg_comments = list(zip(r_neg['comment_id'], r_neg['comment']))
+                pos_name = generate_region_summary_name([c for _, c in pos_comments], region)
+                pos_summary = generate_actionable_summary_openai(pos_comments)
+                neg_name = generate_region_summary_name([c for _, c in neg_comments], region)
+                neg_summary = generate_actionable_summary_openai(neg_comments)
 
-                row = {
-                    'Region': region,
-                    'Sentiment Breakdown': f"Positive: {len(r_pos)} ({r_pos_pct:.2f}%) | Negative: {len(r_neg)} ({r_neg_pct:.2f}%)",
-                    'Positive Analysis': f"({len(r_pos)}) {pos_summary}",
-                    'Negative Analysis': f"({len(r_neg)}) {neg_summary}"
-                }
-                rows.append(row)
-
-                # For CSV
+                row = [
+                    region,
+                    f"Positive: {len(r_pos)} ({r_pos_pct:.2f}%) | Negative: {len(r_neg)} ({r_neg_pct:.2f}%)",
+                    f"({len(r_pos)}) {pos_name}
+{pos_summary}",
+                    f"({len(r_neg)}) {neg_name}
+{neg_summary}"
+                ]
+                table_data.append(row)
+                # Collect for combined CSV
+                melted = []
                 if pos_summary:
-                    all_tables.append({**row, 'Topic': topic, 'Sentiment Type': 'Positive', 'Analysis Details': pos_summary})
+                    all_tables_data.append({
+                        'Topic': topic,
+                        'Region': region,
+                        'Sentiment Breakdown': f"Positive: {len(r_pos)} ({r_pos_pct:.2f}%)",
+                        'Analysis Details': pos_summary,
+                        'Sentiment Type': 'Positive'
+                    })
                 if neg_summary:
-                    all_tables.append({**row, 'Topic': topic, 'Sentiment Type': 'Negative', 'Analysis Details': neg_summary})
+                    all_tables_data.append({
+                        'Topic': topic,
+                        'Region': region,
+                        'Sentiment Breakdown': f"Negative: {len(r_neg)} ({r_neg_pct:.2f}%)",
+                        'Analysis Details': neg_summary,
+                        'Sentiment Type': 'Negative'
+                    })
 
-            if rows:
-                st.table(pd.DataFrame(rows))
+            # Display HTML table if data exists
+            if len(table_data) > 2:
+                df_table = pd.DataFrame(table_data[1:], columns=table_data[0])
+                html = df_table.to_html(index=False).replace("
+", "<br/>")
+                st.markdown(f"---
+### 🗂️ Topic: {topic}", unsafe_allow_html=True)
+                st.markdown(html, unsafe_allow_html=True)
+            else:
+                st.warning(f"⚠️ No positive/negative data for topic '{topic}'")
 
-        # Download combined
-        if all_tables:
-            combined_df = pd.DataFrame(all_tables)
-            st.download_button(
-                "Download Summary Tables as CSV",
-                combined_df.to_csv(index=False),
-                file_name="region_sentiment_tables.csv"
-            )
+        # Save Combined Tables to CSV
+        if all_tables_data:
+            combined_tables_df = pd.DataFrame(all_tables_data)
+            st.download_button("Download Summary Tables as CSV", combined_tables_df.to_csv(index=False), file_name="region_sentiment_tables.csv")
+        else:
+            st.warning("⚠️ No summary tables data generated.")
 
-        # Appendix
-        appendix = df.sort_values(by=['topic', 'sentiment', 'region']).reset_index(drop=True)
-        st.download_button(
-            "Download Appendix CSV",
-            appendix.to_csv(index=False),
-            file_name="comment_region_appendix.csv"
-        )
+        # Save Appendix
+        appendix_sorted = df.sort_values(by=['topic', 'sentiment', 'region']).reset_index(drop=True)
+        st.download_button("Download Appendix CSV", appendix_sorted.to_csv(index=False), file_name="comment_region_appendix.csv")
