@@ -99,8 +99,9 @@ if file2 is not None:
         all_tables_data = []
         # Iterate topics
         for topic in sorted(df_filtered['topic'].unique()):
-            st.markdown(f"---
-### 🗂️ Topic: {topic}")
+            # Separator and header
+            st.markdown("---")
+            st.markdown(f"### 🗂️ Topic: {topic}")
             topic_df = df_filtered[df_filtered['topic'] == topic]
 
             # Prepare table_data with headers
@@ -143,7 +144,7 @@ if file2 is not None:
                 ) if neg_comments else ''
                 neg_summary = generate_actionable_summary_openai(neg_comments) if neg_comments else ''
 
-                # Build row
+                # Build row with escaped newline
                 row = [
                     region,
                     f"Positive: {len(region_pos)} ({region_pos_pct:.2f}%) | Negative: {len(region_neg)} ({region_neg_pct:.2f}%)",
