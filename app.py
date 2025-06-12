@@ -26,7 +26,7 @@ def generate_actionable_summary_openai(comment_tuples: List[Tuple[int, str]]) ->
         f"{texts}\n\n"
         "Please provide a concise, actionable summary that references the comment IDs in brackets."
     )
-    response = openai.ChatCompletion.create(
+    response = openai.chat.completions.create(
         model="gpt-4",
         messages=[
             {"role": "system", "content": "You summarize user feedback into actionable insights."},
