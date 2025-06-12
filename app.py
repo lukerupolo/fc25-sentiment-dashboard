@@ -1,127 +1,74 @@
 import streamlit as st
 import pandas as pd
-import os
-import sys
-import textwrap
-from openai import OpenAI
-from io import StringIO
+import requests
 
-# Initialize OpenAI
-os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+API_URL = "https://sentiment-api-1081516136341.us-central1.run.app/predict"
 
-st.set_page_config(page_title="FC25 Sentiment Dashboard", layout="wide")
-st.title("📊 FC25 Sentiment Analysis Dashboard")
+st.title("🌍 FC25 Multilingual Sentiment Dashboard")
+st.write("This tool analyzes translated feedback and generates topic/region insights.")
 
-st.markdown("Upload a CSV containing the following columns: `comment`, `topic`, `region`, `predicted_sentiment`.")
+# STEP 1: Upload comments + topic CSV
+st.header("Step 1: Upload Translated Comments")
+file1 = st.file_uploader("Upload CSV with 'comment' and 'topic' columns", type="csv", key="upload1")
 
-# Upload file
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    required_cols = ["comment", "topic", "region", "predicted_sentiment"]
-
-    if not all(col in df.columns for col in required_cols):
-        st.error(f"Missing one or more required columns: {required_cols}")
+if file1 is not None:
+    df1 = pd.read_csv(file1)
+    if not {"comment", "topic"}.issubset(df1.columns):
+        st.error("CSV must contain 'comment' and 'topic' columns.")
     else:
-        for col in required_cols:
-            df[col] = df[col].astype(str).fillna('').str.strip()
+        st.success("File uploaded! Now predicting sentiment...")
 
-        df['comment_id'] = range(1, len(df) + 1)
-        df['cluster'] = df['region'].fillna('Unknown')
+        payload = {
+            "comments": df1["comment"].fillna("").tolist(),
+            "threshold": 0.65
+        }
+        try:
+            res = requests.post(API_URL, json=payload)
+            res.raise_for_status()
+            predictions = res.json()
+            sentiment_df = pd.DataFrame(predictions)
+            df_with_sentiment = pd.concat([df1.reset_index(drop=True), sentiment_df[["sentiment", "confidence"]]], axis=1)
 
-        # Function to generate region summary name
-        def generate_region_summary_name(comments_list, region_name):
-            if not comments_list:
-                return f"Summary for {region_name}"
+            st.subheader("Predicted Sentiments")
+            st.dataframe(df_with_sentiment.head(10))
+            st.download_button("Download CSV with Sentiments", df_with_sentiment.to_csv(index=False), file_name="predicted_sentiment.csv")
+        except Exception as e:
+            st.error(f"API error: {e}")
 
-            sample_comments = comments_list[:7]
-            combined_sample = "\n---\n".join(sample_comments)
+# STEP 2: Upload final CSV (region, topic, sentiment, comment)
+st.header("Step 2: Upload Final CSV for Analysis")
+file2 = st.file_uploader("Upload CSV with 'region', 'topic', 'sentiment', 'comment'", type="csv", key="upload2")
 
-            prompt = f"""Based on the following customer feedback comments for FC25 from the {region_name} region, provide a very short, descriptive name (5-8 words max) focused on the most important issues or praise.
+if file2 is not None:
+    df2 = pd.read_csv(file2)
+    required_cols = {"region", "topic", "sentiment", "comment"}
+    if not required_cols.issubset(df2.columns):
+        st.error(f"CSV must include: {', '.join(required_cols)}")
+    else:
+        st.success("Generating styled sentiment report...")
 
-Comments:
-{combined_sample}
+        topics = df2["topic"].unique()
+        for topic in topics:
+            st.markdown(f"### 🗂️ Topic: {topic}")
+            topic_df = df2[df2["topic"] == topic]
 
-Region Summary Name:"""
-
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that names summaries of customer feedback by region."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=30,
-                    temperature=0.5
-                )
-                return response.choices[0].message.content.strip().strip('"')
-            except:
-                return f"Summary for {region_name}"
-
-        # Function to generate summary with comment IDs
-        def generate_actionable_summary_openai(comments_with_ids):
-            if not comments_with_ids:
-                return "No comments in this group."
-
-            formatted_comments = [f"(ID {cid}) {comment}" for cid, comment in comments_with_ids]
-            combined_text = "\n---\n".join(formatted_comments[:50])
-
-            prompt = f"""Summarize the following customer feedback comments (each with a unique ID).
-Focus on specific gameplay details, bugs, features, or praise.
-Use this structure:
-"Excitement is being generated around [issue/topic] (e.g. see IDs 4, 18, 22...)"
-or
-"Frustration is being generated around [issue/topic] (e.g. see IDs 4, 18, 22...)"
-
-Comments:
-{combined_text}
-
-Summary:"""
-
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that summarizes customer feedback, focusing on specific details and referencing comment IDs."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=300
-                )
-                return response.choices[0].message.content.strip()
-            except Exception as e:
-                return f"Error: {e}"
-
-        st.success("✅ File loaded. Now displaying detailed summaries below.")
-
-        filtered_df = df[df['predicted_sentiment'].isin(['positive', 'negative'])]
-
-        for topic in filtered_df['topic'].unique():
-            st.markdown(f"### 🧠 Topic: {topic}")
-            topic_df = filtered_df[filtered_df['topic'] == topic]
-            for region in sorted(topic_df['region'].unique()):
-                region_df = topic_df[topic_df['region'] == region]
+            for region in topic_df["region"].unique():
+                region_df = topic_df[topic_df["region"] == region]
                 st.markdown(f"**🌍 Region: {region}**")
 
-                for sentiment in ['positive', 'negative']:
-                    subset = region_df[region_df['predicted_sentiment'] == sentiment]
-                    if len(subset) >= 5:
-                        comments = subset[['comment_id', 'comment']].values.tolist()
-                        name = generate_region_summary_name([c for _, c in comments], region)
-                        summary = generate_actionable_summary_openai(comments)
-                        st.markdown(f"**Sentiment:** {sentiment.capitalize()}  ")
-                        st.markdown(f"**Summary Name:** {name}  ")
-                        st.markdown(f"**Summary:**\n\n{summary}")
-                    else:
-                        st.markdown(f"*Not enough {sentiment} comments to summarize.*")
+                total = len(region_df)
+                pos = region_df[region_df["sentiment"] == "positive"]
+                neg = region_df[region_df["sentiment"] == "negative"]
+                pos_count = len(pos)
+                neg_count = len(neg)
 
-        # Save Appendix
-        appendix_filename = "comment_region_appendix.csv"
-        df.to_csv(appendix_filename, index=False)
-        st.download_button(
-            label="📥 Download Appendix CSV",
-            data=open(appendix_filename, "rb").read(),
-            file_name=appendix_filename,
-            mime="text/csv"
-        )
+                if total > 0:
+                    pos_pct = (pos_count / total) * 100
+                    neg_pct = (neg_count / total) * 100
+                    st.write(f"**Sentiment Breakdown:** Positive: {pos_count} ({pos_pct:.2f}%) | Negative: {neg_count} ({neg_pct:.2f}%)")
+
+                st.write("**✅ Positive Sentiment Analysis:**")
+                st.write("\n\n".join(pos["comment"].dropna().head(5)))
+
+                st.write("**⚠️ Negative Sentiment Analysis:**")
+                st.write("\n\n".join(neg["comment"].dropna().head(5)))
