@@ -4,140 +4,105 @@ import requests
 import openai
 from bs4 import BeautifulSoup
 
+# ─── CONFIG ────────────────────────────────────────────────────────
+API_URL = "https://sentiment-api-1081516136341.us-central1.run.app/predict"  # now handles both topic + sentiment
+WEEKLY_CONTEXT_URL = "https://www.ea.com/games/ea-sports-fc/fc-25/news"
+
 # ─── 1) OPENAI KEY ────────────────────────────────────────────────
 try:
     openai.api_key = st.secrets["openai_api_key"]
 except KeyError:
-    st.error("OpenAI API key not found in Streamlit secrets. Please add it to .streamlit/secrets.toml")
+    st.error("OpenAI API key not found. Please add it to .streamlit/secrets.toml")
     st.stop()
 
-API_URL = "https://sentiment-api-1081516136341.us-central1.run.app/predict"
+# ─── 2) SCRAPE WEEKLY CONTEXT ──────────────────────────────────────
+@st.cache_data(ttl=60*60*24*7)
+def fetch_weekly_context(url: str) -> str:
+    """Fetch and return concatenated article text from the EA FC25 news page."""
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        # Assume each article summary is in <p> or <h2> tags within a container
+        texts = []
+        for tag in soup.select(".c-content-listing__body p, .c-content-listing__body h2"):  # adjust selectors as needed
+            texts.append(tag.get_text(strip=True))
+        return "\n".join(texts)
+    except Exception as e:
+        st.warning(f"Could not fetch weekly context: {e}")
+        return ""
 
-# ─── 2) SESSION STATE SETUP ───────────────────────────────────────
+weekly_context = fetch_weekly_context(WEEKLY_CONTEXT_URL)
+
+# ─── 3) SESSION STATE ─────────────────────────────────────────────
 if "step" not in st.session_state:
     st.session_state.step = 0
-    st.session_state.topics = []       # Will hold the 4 topic names
-    st.session_state.contexts = {}     # topic → context blob or list or scraped text
-    st.session_state.files = []        # uploaded CSV files
-    st.session_state.regions = {}      # filename → region tag
+    st.session_state.topics = []
+    st.session_state.files = []
+    st.session_state.regions = {}
+
 
 def next_step():
     st.session_state.step += 1
 
 st.title("🌍 FC25 Multilingual Sentiment Dashboard")
 
-# ─── 3) STEPS 0–4: ASK FOR 4 TOPIC NAMES ──────────────────────────
+# ─── 4) TOPIC COLLECTION ─────────────────────────────────────────
 if st.session_state.step == 0:
-    st.write("### Step 1: Define your 4 topics")
-    st.write("I'll ask you for exactly four topics you care about.")
+    st.write("### Step 1: Enter your 4 topics")
+    st.write("These will be used for topic classification alongside weekly context.")
     if st.button("Start"):
         next_step()
 
 elif 1 <= st.session_state.step <= 4:
     idx = st.session_state.step
-    topic = st.text_input(f"Topic #{idx} name:", key=f"topic_in_{idx}")
-    if st.button("Save topic", key=f"save_topic_{idx}"):
+    topic = st.text_input(f"Topic #{idx} name:", key=f"topic_{idx}")
+    if st.button("Save Topic", key=f"save_topic_{idx}"):
         if topic.strip():
             st.session_state.topics.append(topic.strip())
             next_step()
         else:
-            st.error("Please enter a topic name.")
+            st.error("Please provide a topic name.")
 
-# ─── 4) STEPS 5–8: GATHER CONTEXT FOR EACH TOPIC ──────────────────
-elif 5 <= st.session_state.step <= 8:
-    ti = st.session_state.step - 4
-    topic = st.session_state.topics[ti-1]
-    st.write(f"### Step 2.{ti}: Context for **{topic}**")
-    st.write("You can either upload a file, paste update-URL, or provide free text.")
-
-    # Option A: upload CSV for structured context
-    f = st.file_uploader(
-        f"(Optional) Upload CSV context for '{topic}' (e.g. players list)",
-        type="csv",
-        key=f"ctx_file_{ti}"
-    )
-    if f:
-        try:
-            df = pd.read_csv(f)
-            st.session_state.contexts[topic] = df.to_dict("records")
-            st.success("File context saved.")
-        except Exception:
-            st.error("Failed to read CSV; please check format.")
-
-    # Option B: scrape from website
-    url = st.text_input(
-        f"(Optional) Or paste a URL to scrape updates for '{topic}'", key=f"ctx_url_{ti}"
-    )
-    if url:
-        try:
-            resp = requests.get(url, timeout=5)
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            # extract paragraphs
-            texts = [p.get_text(strip=True) for p in soup.find_all('p')]
-            joined = "\n".join(texts)
-            st.session_state.contexts[topic] = joined
-            st.success("Scraped website content.")
-        except Exception:
-            st.error("Failed to fetch or parse URL.")
-
-    # Option C: free-text context
-    extra = st.text_area(
-        f"(Optional) Free-text context for '{topic}'", key=f"ctx_txt_{ti}"
-    )
-    if extra.strip():
-        st.session_state.contexts[topic] = extra
-
-    if st.button("Next", key=f"next_ctx_{ti}"):
-        next_step()
-
-# ─── 5) STEP 9: UPLOAD REGION FILES ───────────────────────────────
-elif st.session_state.step == 9:
-    st.write("### Step 3: Upload all region CSVs")
-    st.write("Select one or more CSV files containing your comments.")
-    files = st.file_uploader(
-        "Select CSVs", type="csv", accept_multiple_files=True, key="upload_files"
-    )
+# ─── 5) REGION FILE UPLOAD ────────────────────────────────────────
+elif st.session_state.step == 5:
+    st.write("### Step 2: Upload region CSVs")
+    st.write("Select one or more CSVs containing comment data (text column auto-detected).")
+    files = st.file_uploader("Select CSVs", type="csv", accept_multiple_files=True)
     if files:
         st.session_state.files = files
         next_step()
 
-# ─── 6) STEP 10: ASSIGN REGION NAMES ─────────────────────────────
-elif st.session_state.step == 10:
-    st.write("### Step 4: Tag each file with its region")
+# ─── 6) REGION TAGGING ─────────────────────────────────────────────
+elif st.session_state.step == 6:
+    st.write("### Step 3: Tag each file's region")
     all_tagged = True
     for f in st.session_state.files:
-        region = st.text_input(
-            f"Region for '{f.name}'", key=f"region_{f.name}"
-        ).strip()
-        if region:
-            st.session_state.regions[f.name] = region
+        region = st.text_input(f"Region for '{f.name}':", key=f"region_{f.name}")
+        if region.strip():
+            st.session_state.regions[f.name] = region.strip()
         else:
             all_tagged = False
     if all_tagged and st.button("Combine & Analyze"):
         next_step()
 
-# ─── 7) STEP 11+: COMBINE, CLASSIFY & REPORT ───────────────────────
+# ─── 7) COMBINE & CLASSIFY ─────────────────────────────────────────
 else:
-    def find_text_column(df):
-        # consider object columns
-        candidates = [c for c in df.columns if df[c].dtype == object]
-        # score by avg length and proportion with spaces
-        scores = {}
-        for c in candidates:
-            series = df[c].dropna().astype(str)
-            if len(series) == 0:
-                continue
-            avg_len = series.map(len).mean()
-            space_pct = series.map(lambda s: s.count(' ') >= 1).mean()
-            scores[c] = (avg_len, space_pct)
-        if not scores:
-            return None
-        # pick highest avg_len * space_pct
-        col = max(scores, key=lambda c: scores[c][0] * scores[c][1])
-        return col
+    # auto-detect text column
+    def find_text_column(df: pd.DataFrame) -> str | None:
+        obj_cols = [c for c in df.columns if df[c].dtype == object]
+        best, best_score = None, -1.0
+        for c in obj_cols:
+            s = df[c].dropna().astype(str)
+            if s.empty: continue
+            avg_len = s.map(len).mean()
+            space_ratio = s.map(lambda v: ' ' in v).mean()
+            score = avg_len * space_ratio
+            if score > best_score:
+                best, best_score = c, score
+        return best
 
-    combined = []
-    skipped = []
+    combined, skipped = [], []
     for f in st.session_state.files:
         if f.size == 0:
             skipped.append(f.name)
@@ -147,49 +112,45 @@ else:
         except pd.errors.EmptyDataError:
             skipped.append(f.name)
             continue
-        # detect best text column
         text_col = find_text_column(df)
         if not text_col:
-            st.error(f"No text-like column found in '{f.name}'.")
+            st.error(f"No text column found in '{f.name}'")
             st.stop()
         df = df.rename(columns={text_col: 'comment'})
         df['region'] = st.session_state.regions[f.name]
         combined.append(df[['comment','region']])
-
     if skipped:
-        st.warning(f"Skipped empty/unreadable files: {', '.join(skipped)}")
+        st.warning(f"Skipped files: {', '.join(skipped)}")
     if not combined:
-        st.error("No valid data to combine. Please upload non-empty CSVs.")
+        st.error("No valid data to combine.")
         st.stop()
 
     master_df = pd.concat(combined, ignore_index=True)
     st.subheader("✅ Combined Comments")
     st.dataframe(master_df.head())
-    st.download_button(
-        "Download combined CSV",
-        master_df.to_csv(index=False),
-        file_name="combined_comments_all_regions.csv"
-    )
+    st.download_button("Download combined CSV",
+                       master_df.to_csv(index=False),
+                       file_name="combined_comments_all_regions.csv")
 
+    # Prepare payload: comments, topics, weekly_context
     payload = {
         "comments": master_df['comment'].fillna("").tolist(),
         "threshold": 0.65,
         "topics": st.session_state.topics,
-        "contexts": st.session_state.contexts
+        "context": weekly_context
     }
 
-    st.write("### Running sentiment & topic classification…")
+    st.write("### Running combined topic & sentiment classification…")
     try:
         res = requests.post(API_URL, json=payload)
         res.raise_for_status()
-        out = pd.DataFrame(res.json())
-        result = pd.concat([master_df.reset_index(drop=True), out], axis=1)
+        out_df = pd.DataFrame(res.json())
+        result = pd.concat([master_df.reset_index(drop=True), out_df], axis=1)
+
         st.subheader("🔍 Results Preview")
         st.dataframe(result.head())
-        st.download_button(
-            "Download final classified CSV",
-            result.to_csv(index=False),
-            file_name="classified_comments_all_regions.csv"
-        )
+        st.download_button("Download final classified CSV",
+                           result.to_csv(index=False),
+                           file_name="classified_comments_all_regions.csv")
     except Exception as e:
         st.error(f"API error: {e}")
