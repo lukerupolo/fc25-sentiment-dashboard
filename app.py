@@ -1,131 +1,127 @@
 import streamlit as st
 import pandas as pd
-import textwrap
 import os
+import sys
+import textwrap
 from openai import OpenAI
 from io import StringIO
 
-# --- Set up OpenAI client ---
-api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key) if api_key else None
+# Initialize OpenAI
+os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-# --- Functions ---
-def generate_actionable_summary_openai(comments_with_ids, chars_per_line=100):
-    if not comments_with_ids:
-        return "No comments in this group."
+st.set_page_config(page_title="FC25 Sentiment Dashboard", layout="wide")
+st.title("📊 FC25 Sentiment Analysis Dashboard")
 
-    formatted_comments = [f"(ID {cid}) {comment}" for cid, comment in comments_with_ids]
-    combined_text = "\n---\n".join(formatted_comments[:50])
-    if len(formatted_comments) > 50:
-        combined_text += "\n..."
+st.markdown("Upload a CSV containing the following columns: `comment`, `topic`, `region`, `predicted_sentiment`.")
 
-    if not client:
-        return "(OpenAI not configured)"
+# Upload file
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-    prompt = f"""Summarize the following customer feedback comments (each with a unique ID).
-Focus on specific, granular insights relevant to FC25 gameplay, features, or issues.
-Reference the comment IDs from the provided list.
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+    required_cols = ["comment", "topic", "region", "predicted_sentiment"]
+
+    if not all(col in df.columns for col in required_cols):
+        st.error(f"Missing one or more required columns: {required_cols}")
+    else:
+        for col in required_cols:
+            df[col] = df[col].astype(str).fillna('').str.strip()
+
+        df['comment_id'] = range(1, len(df) + 1)
+        df['cluster'] = df['region'].fillna('Unknown')
+
+        # Function to generate region summary name
+        def generate_region_summary_name(comments_list, region_name):
+            if not comments_list:
+                return f"Summary for {region_name}"
+
+            sample_comments = comments_list[:7]
+            combined_sample = "\n---\n".join(sample_comments)
+
+            prompt = f"""Based on the following customer feedback comments for FC25 from the {region_name} region, provide a very short, descriptive name (5-8 words max) focused on the most important issues or praise.
+
+Comments:
+{combined_sample}
+
+Region Summary Name:"""
+
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that names summaries of customer feedback by region."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=30,
+                    temperature=0.5
+                )
+                return response.choices[0].message.content.strip().strip('"')
+            except:
+                return f"Summary for {region_name}"
+
+        # Function to generate summary with comment IDs
+        def generate_actionable_summary_openai(comments_with_ids):
+            if not comments_with_ids:
+                return "No comments in this group."
+
+            formatted_comments = [f"(ID {cid}) {comment}" for cid, comment in comments_with_ids]
+            combined_text = "\n---\n".join(formatted_comments[:50])
+
+            prompt = f"""Summarize the following customer feedback comments (each with a unique ID).
+Focus on specific gameplay details, bugs, features, or praise.
+Use this structure:
+"Excitement is being generated around [issue/topic] (e.g. see IDs 4, 18, 22...)"
+or
+"Frustration is being generated around [issue/topic] (e.g. see IDs 4, 18, 22...)"
 
 Comments:
 {combined_text}
 
 Summary:"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant summarizing customer feedback."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=300
-        )
-        summary = response.choices[0].message.content.strip()
-    except Exception as e:
-        summary = f"Error generating summary: {e}"
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that summarizes customer feedback, focusing on specific details and referencing comment IDs."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=300
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                return f"Error: {e}"
 
-    return summary
+        st.success("✅ File loaded. Now displaying detailed summaries below.")
 
-def generate_region_summary_name(comments_list, region_name):
-    if not client or not comments_list:
-        return f"Summary for {region_name}"
+        filtered_df = df[df['predicted_sentiment'].isin(['positive', 'negative'])]
 
-    sample_comments = comments_list[:7]
-    combined_sample = "\n---\n".join(sample_comments)
-
-    prompt = f"""Based on the following customer feedback from {region_name}, provide a short descriptive name:
-
-{combined_sample}
-
-Region Summary Name:"""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You name summaries of customer feedback."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=30
-        )
-        name = response.choices[0].message.content.strip().strip('"').strip("'")
-    except Exception as e:
-        name = f"Summary for {region_name}"
-
-    return name
-
-# --- Streamlit UI ---
-st.title("📊 FC25 Regional Sentiment Summary Generator")
-
-uploaded_file = st.file_uploader("Upload CSV with 'comment', 'topic', 'region', 'predicted_sentiment' columns", type="csv")
-
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-
-    required_cols = ['comment', 'topic', 'region', 'predicted_sentiment']
-    if not all(col in df.columns for col in required_cols):
-        st.error(f"Missing required columns. Required: {required_cols}")
-    else:
-        df['comment'] = df['comment'].astype(str).str.strip()
-        df['comment_id'] = range(1, len(df) + 1)
-
-        summary_output = []
-
-        for topic in df['topic'].unique():
-            topic_df = df[df['topic'] == topic]
-            st.header(f"📝 Topic: {topic}")
-
-            for region in topic_df['region'].unique():
+        for topic in filtered_df['topic'].unique():
+            st.markdown(f"### 🧠 Topic: {topic}")
+            topic_df = filtered_df[filtered_df['topic'] == topic]
+            for region in sorted(topic_df['region'].unique()):
                 region_df = topic_df[topic_df['region'] == region]
+                st.markdown(f"**🌍 Region: {region}**")
 
-                pos_comments = region_df[region_df['predicted_sentiment'] == 'positive'][['comment_id', 'comment']].values.tolist()
-                neg_comments = region_df[region_df['predicted_sentiment'] == 'negative'][['comment_id', 'comment']].values.tolist()
+                for sentiment in ['positive', 'negative']:
+                    subset = region_df[region_df['predicted_sentiment'] == sentiment]
+                    if len(subset) >= 5:
+                        comments = subset[['comment_id', 'comment']].values.tolist()
+                        name = generate_region_summary_name([c for _, c in comments], region)
+                        summary = generate_actionable_summary_openai(comments)
+                        st.markdown(f"**Sentiment:** {sentiment.capitalize()}  ")
+                        st.markdown(f"**Summary Name:** {name}  ")
+                        st.markdown(f"**Summary:**\n\n{summary}")
+                    else:
+                        st.markdown(f"*Not enough {sentiment} comments to summarize.*")
 
-                if not pos_comments and not neg_comments:
-                    continue
-
-                st.subheader(f"📍 Region: {region}")
-
-                if pos_comments:
-                    name = generate_region_summary_name([c for _, c in pos_comments], region)
-                    summary = generate_actionable_summary_openai(pos_comments)
-                    st.markdown(f"**Positive Summary Name:** {name}")
-                    st.markdown(summary)
-                    summary_output.append((topic, region, "positive", name, summary))
-
-                if neg_comments:
-                    name = generate_region_summary_name([c for _, c in neg_comments], region)
-                    summary = generate_actionable_summary_openai(neg_comments)
-                    st.markdown(f"**Negative Summary Name:** {name}")
-                    st.markdown(summary)
-                    summary_output.append((topic, region, "negative", name, summary))
-
-        # --- Download option for summaries ---
-        if summary_output:
-            summary_df = pd.DataFrame(summary_output, columns=['Topic', 'Region', 'Sentiment', 'Summary Name', 'Summary'])
-            csv = summary_df.to_csv(index=False)
-            st.download_button("📥 Download Summary Table", csv, "summary_table.csv")
-
-        # --- Download option for appendix ---
-        appendix_csv = df.to_csv(index=False)
-        st.download_button("📥 Download Appendix (All Comments)", appendix_csv, "appendix_all_comments.csv")
+        # Save Appendix
+        appendix_filename = "comment_region_appendix.csv"
+        df.to_csv(appendix_filename, index=False)
+        st.download_button(
+            label="📥 Download Appendix CSV",
+            data=open(appendix_filename, "rb").read(),
+            file_name=appendix_filename,
+            mime="text/csv"
+        )
