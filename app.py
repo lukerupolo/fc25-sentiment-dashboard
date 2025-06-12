@@ -148,10 +148,8 @@ if file2 is not None:
                 row = [
                     region,
                     f"Positive: {len(region_pos)} ({region_pos_pct:.2f}%) | Negative: {len(region_neg)} ({region_neg_pct:.2f}%)",
-                    f"({len(region_pos)}) {pos_name}
-{pos_summary}",
-                    f"({len(region_neg)}) {neg_name}
-{neg_summary}"
+                    f"({len(region_pos)}) {pos_name}\n{pos_summary}",
+                    f"({len(region_neg)}) {neg_name}\n{neg_summary}"
                 ]
                 table_data.append(row)
 
@@ -177,8 +175,7 @@ if file2 is not None:
             # Display HTML table
             if len(table_data) > 2:
                 df_table = pd.DataFrame(table_data[1:], columns=table_data[0])
-                html = df_table.to_html(index=False).replace("
-", "<br/>")
+                html = df_table.to_html(index=False).replace("\\n", "<br/>")
                 st.markdown(html, unsafe_allow_html=True)
             else:
                 st.warning(f"No positive or negative data to display for topic '{topic}'.")
