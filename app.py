@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import openai
+from bs4 import BeautifulSoup
 
 # ─── 1) OPENAI KEY ────────────────────────────────────────────────
 try:
@@ -16,10 +17,9 @@ API_URL = "https://sentiment-api-1081516136341.us-central1.run.app/predict"
 if "step" not in st.session_state:
     st.session_state.step = 0
     st.session_state.topics = []       # Will hold the 4 topic names
-    st.session_state.contexts = {}     # topic → context blob or list
+    st.session_state.contexts = {}     # topic → context blob or list or scraped text
     st.session_state.files = []        # uploaded CSV files
     st.session_state.regions = {}      # filename → region tag
-
 
 def next_step():
     st.session_state.step += 1
@@ -48,45 +48,54 @@ elif 5 <= st.session_state.step <= 8:
     ti = st.session_state.step - 4
     topic = st.session_state.topics[ti-1]
     st.write(f"### Step 2.{ti}: Context for **{topic}**")
+    st.write("You can either upload a file, paste update-URL, or provide free text.")
 
-    # Example: for "Ultimate TOTS", upload full CSV of players+ratings
-    if topic.lower() == "ultimate tots":
-        f = st.file_uploader(
-            f"Upload your full TOTS players+ratings CSV", type="csv", key=f"ctx_tots_{ti}"
-        )
-        if f:
+    # Option A: upload CSV for structured context
+    f = st.file_uploader(
+        f"(Optional) Upload CSV context for '{topic}' (e.g. players list)",
+        type="csv",
+        key=f"ctx_file_{ti}"
+    )
+    if f:
+        try:
             df = pd.read_csv(f)
             st.session_state.contexts[topic] = df.to_dict("records")
-            st.success("TOTS list saved.")
-            if st.button("Next"):
-                next_step()
+            st.success("File context saved.")
+        except Exception:
+            st.error("Failed to read CSV; please check format.")
 
-    # Example: for any topic containing "gameplay", paste patch notes
-    elif "gameplay" in topic.lower():
-        notes = st.text_area(
-            "Paste any new gameplay patch notes or bullet-points", key=f"ctx_game_{ti}"
-        )
-        if notes.strip():
-            st.session_state.contexts[topic] = notes
-            if st.button("Next"):
-                next_step()
+    # Option B: scrape from website
+    url = st.text_input(
+        f"(Optional) Or paste a URL to scrape updates for '{topic}'", key=f"ctx_url_{ti}"
+    )
+    if url:
+        try:
+            resp = requests.get(url, timeout=5)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            # extract paragraphs
+            texts = [p.get_text(strip=True) for p in soup.find_all('p')]
+            joined = "\n".join(texts)
+            st.session_state.contexts[topic] = joined
+            st.success("Scraped website content.")
+        except Exception:
+            st.error("Failed to fetch or parse URL.")
 
-    # Fallback: generic free-text context
-    else:
-        extra = st.text_area(
-            f"Any extra context for '{topic}'? (optional)", key=f"ctx_free_{ti}"
-        )
-        if extra is not None:
-            st.session_state.contexts[topic] = extra
-            if st.button("Next"):
-                next_step()
+    # Option C: free-text context
+    extra = st.text_area(
+        f"(Optional) Free-text context for '{topic}'", key=f"ctx_txt_{ti}"
+    )
+    if extra.strip():
+        st.session_state.contexts[topic] = extra
+
+    if st.button("Next", key=f"next_ctx_{ti}"):
+        next_step()
 
 # ─── 5) STEP 9: UPLOAD REGION FILES ───────────────────────────────
 elif st.session_state.step == 9:
     st.write("### Step 3: Upload all region CSVs")
-    st.write("Each file should have a `comment` column.")
+    st.write("Select one or more CSV files containing your comments.")
     files = st.file_uploader(
-        "Select one or more CSVs", type="csv", accept_multiple_files=True, key="upload_files"
+        "Select CSVs", type="csv", accept_multiple_files=True, key="upload_files"
     )
     if files:
         st.session_state.files = files
@@ -98,61 +107,72 @@ elif st.session_state.step == 10:
     all_tagged = True
     for f in st.session_state.files:
         region = st.text_input(
-            f"Region for `{f.name}`", key=f"region_{f.name}"
+            f"Region for '{f.name}'", key=f"region_{f.name}"
         ).strip()
         if region:
             st.session_state.regions[f.name] = region
         else:
             all_tagged = False
-
     if all_tagged and st.button("Combine & Analyze"):
         next_step()
 
 # ─── 7) STEP 11+: COMBINE, CLASSIFY & REPORT ───────────────────────
 else:
-    # Combine CSVs with error handling
+    def find_text_column(df):
+        # consider object columns
+        candidates = [c for c in df.columns if df[c].dtype == object]
+        # score by avg length and proportion with spaces
+        scores = {}
+        for c in candidates:
+            series = df[c].dropna().astype(str)
+            if len(series) == 0:
+                continue
+            avg_len = series.map(len).mean()
+            space_pct = series.map(lambda s: s.count(' ') >= 1).mean()
+            scores[c] = (avg_len, space_pct)
+        if not scores:
+            return None
+        # pick highest avg_len * space_pct
+        col = max(scores, key=lambda c: scores[c][0] * scores[c][1])
+        return col
+
     combined = []
     skipped = []
     for f in st.session_state.files:
-        # Skip truly empty files
         if f.size == 0:
             skipped.append(f.name)
             continue
-        # Try reading; catch empty-data errors
         try:
             df = pd.read_csv(f)
         except pd.errors.EmptyDataError:
             skipped.append(f.name)
             continue
-        # Normalize column name
-        if "comment" in df.columns:
-            df = df.rename(columns={"comment": "comment"})
-        if "comment" not in df.columns:
-            st.error(f"`{f.name}` is missing a 'comment' column.")
+        # detect best text column
+        text_col = find_text_column(df)
+        if not text_col:
+            st.error(f"No text-like column found in '{f.name}'.")
             st.stop()
-        df["region"] = st.session_state.regions[f.name]
-        combined.append(df[["comment", "region"]])
+        df = df.rename(columns={text_col: 'comment'})
+        df['region'] = st.session_state.regions[f.name]
+        combined.append(df[['comment','region']])
 
     if skipped:
-        st.warning(f"Skipped empty or unreadable files: {', '.join(skipped)}")
+        st.warning(f"Skipped empty/unreadable files: {', '.join(skipped)}")
     if not combined:
-        st.error("No valid CSV data to combine. Please upload non-empty CSVs.")
+        st.error("No valid data to combine. Please upload non-empty CSVs.")
         st.stop()
 
     master_df = pd.concat(combined, ignore_index=True)
-
     st.subheader("✅ Combined Comments")
     st.dataframe(master_df.head())
-
     st.download_button(
         "Download combined CSV",
         master_df.to_csv(index=False),
         file_name="combined_comments_all_regions.csv"
     )
 
-    # Prepare payload including topics and contexts
     payload = {
-        "comments": master_df["comment"].fillna("").tolist(),
+        "comments": master_df['comment'].fillna("").tolist(),
         "threshold": 0.65,
         "topics": st.session_state.topics,
         "contexts": st.session_state.contexts
@@ -164,15 +184,12 @@ else:
         res.raise_for_status()
         out = pd.DataFrame(res.json())
         result = pd.concat([master_df.reset_index(drop=True), out], axis=1)
-
         st.subheader("🔍 Results Preview")
         st.dataframe(result.head())
-
         st.download_button(
             "Download final classified CSV",
             result.to_csv(index=False),
             file_name="classified_comments_all_regions.csv"
         )
-
     except Exception as e:
         st.error(f"API error: {e}")
