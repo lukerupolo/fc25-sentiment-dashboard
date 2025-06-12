@@ -1,5 +1,4 @@
 
-!pip install openai -q
 # %%
 import pandas as pd
 from google.colab import files
