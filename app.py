@@ -21,11 +21,12 @@ def generate_actionable_summary_openai(comment_tuples: List[Tuple[int, str]]) ->
     """
     # Format comments with IDs
     texts = "
-".join(f"[{cid}] {text}" for cid, text in comment_tuples)
+".join([f"[{cid}] {text}" for cid, text in comment_tuples])
+    # Build prompt via f-string to ensure proper quoting
     prompt = (
-        "You are an expert analyst. Given the following feedback comments labeled by ID:
+        f"You are an expert analyst. Given the following feedback comments labeled by ID:
 "
-        + texts + "
+        f"{texts}
 
 "
         "Please provide a concise, actionable summary that references the comment IDs in brackets."
@@ -46,7 +47,8 @@ def generate_actionable_summary_openai(comment_tuples: List[Tuple[int, str]]) ->
         return ""
     except Exception as e:
         st.error(f"Error generating summary: {e}")
-        return "" from Streamlit secrets from Streamlit secrets
+        return ""
+
 try:
     openai.api_key = st.secrets["openai_api_key"]
 except KeyError:
