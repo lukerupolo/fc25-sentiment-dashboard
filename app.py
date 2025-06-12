@@ -20,24 +20,33 @@ def generate_actionable_summary_openai(comment_tuples: List[Tuple[int, str]]) ->
     Generate an actionable summary from a list of (comment_id, comment) tuples using OpenAI.
     """
     # Format comments with IDs
-    texts = "\n".join(f"[{cid}] {text}" for cid, text in comment_tuples)
+    texts = "
+".join(f"[{cid}] {text}" for cid, text in comment_tuples)
     prompt = (
-        "You are an expert analyst. Given the following feedback comments labeled by ID:\n"
-        f"{texts}\n\n"
+        "You are an expert analyst. Given the following feedback comments labeled by ID:
+"
+        + texts + "
+
+"
         "Please provide a concise, actionable summary that references the comment IDs in brackets."
     )
-    response = openai.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "You summarize user feedback into actionable insights."},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=200,
-        temperature=0.7
-    )
-    return response.choices[0].message.content.strip()
-
-# Set your OpenAI API key from Streamlit secrets
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You summarize user feedback into actionable insights."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=200,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except openai.error.AuthenticationError:
+        st.error("OpenAI authentication failed. Please check your API key in Streamlit secrets.")
+        return ""
+    except Exception as e:
+        st.error(f"Error generating summary: {e}")
+        return "" from Streamlit secrets from Streamlit secrets
 try:
     openai.api_key = st.secrets["openai_api_key"]
 except KeyError:
