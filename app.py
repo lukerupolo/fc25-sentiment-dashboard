@@ -3,81 +3,160 @@ import pandas as pd
 import requests
 import openai
 
-# Set your OpenAI API key from Streamlit secrets
+# ─── 1) OPENAI KEY ─────────────────────────────────────────────
 try:
     openai.api_key = st.secrets["openai_api_key"]
 except KeyError:
-    st.error("OpenAI API key not found in Streamlit secrets. Please add it to .streamlit/secrets.toml")
+    st.error("Add your OpenAI key to .streamlit/secrets.toml")
     st.stop()
 
 API_URL = "https://sentiment-api-1081516136341.us-central1.run.app/predict"
 
+# ─── 2) STATE SETUP ─────────────────────────────────────────────
+if "step" not in st.session_state:
+    st.session_state.step = 0
+    st.session_state.topics = []           # ["Ultimate TOTS", ...]
+    st.session_state.contexts = {}         # {"Ultimate TOTS": <csv or text>, ...}
+    st.session_state.files = []            # uploaded files
+    st.session_state.regions = {}          # {filename: region_tag, ...}
+
+def next_step():
+    st.session_state.step += 1
+
 st.title("🌍 FC25 Multilingual Sentiment Dashboard")
-st.write("Upload a CSV with columns: **comment**, **topic**, **region**")
 
-# Single upload
-file = st.file_uploader("Upload CSV", type="csv")
-if file is not None:
-    df = pd.read_csv(file)
-    required = {"comment", "topic", "region"}
-    if not required.issubset(df.columns):
-        st.error(f"CSV must contain columns: {', '.join(required)}")
+# ─── 3) TOPIC NAMES (steps 0→4) ─────────────────────────────────
+if st.session_state.step == 0:
+    st.write("**👋 Let’s set up your 4 topics first.**")
+    if st.button("Start"):
+        next_step()
+
+elif 1 <= st.session_state.step <= 4:
+    idx = st.session_state.step
+    t = st.text_input(f"Name of Topic #{idx}:", key=f"topic_in_{idx}")
+    if st.button("Save Topic", key=f"save_topic_{idx}"):
+        if not t.strip():
+            st.error("Please enter a topic name.")
+        else:
+            st.session_state.topics.append(t.strip())
+            next_step()
+
+# ─── 4) TOPIC CONTEXT (steps 5→8) ───────────────────────────────
+elif 5 <= st.session_state.step <= 8:
+    ti = st.session_state.step - 4
+    topic = st.session_state.topics[ti-1]
+    st.write(f"### Context for **{topic}**")
+
+    # Example: full TOTS list as CSV
+    if topic.lower() == "ultimate tots":
+        f = st.file_uploader(
+            f"Upload your full TOTS players+ratings CSV",
+            type="csv", key=f"ctx_tots_{ti}"
+        )
+        if f:
+            df = pd.read_csv(f)
+            st.session_state.contexts[topic] = df.to_dict("records")
+            st.success("TOTS list saved.")
+            if st.button("Next"):
+                next_step()
+
+    # Example: gameplay patch-notes text
+    elif "gameplay" in topic.lower():
+        notes = st.text_area(
+            "Paste any new gameplay patch notes or bullet-points",
+            key=f"ctx_game_{ti}"
+        )
+        if notes.strip():
+            st.session_state.contexts[topic] = notes
+            if st.button("Next"):
+                next_step()
+
+    # Fallback: free text
     else:
-        st.success("File uploaded! Predicting sentiment...")
+        extra = st.text_area(
+            f"Any extra context for '{topic}'? (optional)",
+            key=f"ctx_free_{ti}"
+        )
+        if extra is not None:
+            st.session_state.contexts[topic] = extra
+            if st.button("Next"):
+                next_step()
 
-        # Call sentiment API
-        payload = {
-            "comments": df["comment"].fillna("").tolist(),
-            "threshold": 0.65
-        }
-        try:
-            res = requests.post(API_URL, json=payload)
-            res.raise_for_status()
-            preds = res.json()
-            sent_df = pd.DataFrame(preds)[["sentiment", "confidence"]]
-            sent_df = sent_df.rename(columns={"sentiment": "predicted_sentiment"})
-            
-            # Merge predictions back
-            df_with_sentiment = pd.concat([df.reset_index(drop=True), sent_df], axis=1)
+# ─── 5) UPLOAD REGION FILES (step 9) ─────────────────────────────
+elif st.session_state.step == 9:
+    st.write("**Now upload all the region CSVs** (each should have a column `Comment` or `comment`).")
+    files = st.file_uploader(
+        "Select multiple CSVs",
+        type="csv",
+        accept_multiple_files=True,
+        key="files_step"
+    )
+    if files:
+        st.session_state.files = files
+        next_step()
 
-            # Download button
-            st.subheader("Download predictions")
-            st.download_button(
-                "Download CSV with Sentiments",
-                df_with_sentiment.to_csv(index=False),
-                file_name="predicted_sentiment.csv"
-            )
+# ─── 6) ASSIGN REGION TAGS (step 10) ─────────────────────────────
+elif st.session_state.step == 10:
+    st.write("**Tell me which region each file represents.**")
+    all_tagged = True
+    for f in st.session_state.files:
+        tag = st.text_input(
+            f"Region name for `{f.name}`", key=f"reg_{f.name}"
+        )
+        if tag.strip():
+            st.session_state.regions[f.name] = tag.strip()
+        else:
+            all_tagged = False
+    if all_tagged and st.button("Combine & Go"):
+        next_step()
 
-            # Analysis report
-            st.header("📊 Sentiment Analysis Report")
-            for topic in df_with_sentiment["topic"].unique():
-                st.markdown(f"### 🗂️ Topic: {topic}")
-                tdf = df_with_sentiment[df_with_sentiment["topic"] == topic]
-                for region in tdf["region"].unique():
-                    rdf = tdf[tdf["region"] == region]
-                    st.markdown(f"**🌍 Region: {region}**")
-                    
-                    total = len(rdf)
-                    pos = rdf[rdf["predicted_sentiment"] == "positive"]
-                    neg = rdf[rdf["predicted_sentiment"] == "negative"]
-                    pos_count, neg_count = len(pos), len(neg)
-                    
-                    if total:
-                        pos_pct = pos_count / total * 100
-                        neg_pct = neg_count / total * 100
-                        st.write(
-                            f"**Sentiment Breakdown:** "
-                            f"Positive: {pos_count} ({pos_pct:.2f}%) | "
-                            f"Negative: {neg_count} ({neg_pct:.2f}%)"
-                        )
-                    
-                    st.write("**✅ Positive Examples:**")
-                    for c in pos["comment"].dropna().head(5):
-                        st.write(f"- {c}")
-                    
-                    st.write("**⚠️ Negative Examples:**")
-                    for c in neg["comment"].dropna().head(5):
-                        st.write(f"- {c}")
+# ─── 7) COMBINE + CLASSIFY (step 11) ──────────────────────────────
+else:
+    # 7a) Combine
+    combined = []
+    for f in st.session_state.files:
+        df = pd.read_csv(f)
+        # unify column name
+        if "comment" in df.columns:
+            df = df.rename(columns={"comment": "Comment"})
+        if "Comment" not in df.columns:
+            st.error(f"`{f.name}` has no 'Comment' column.")
+            st.stop()
+        df["region"] = st.session_state.regions[f.name]
+        combined.append(df[["Comment", "region"]])
+    master_df = pd.concat(combined, ignore_index=True)
 
-        except Exception as e:
-            st.error(f"API error: {e}")
+    st.subheader("✅ Combined Data")
+    st.dataframe(master_df.head())
+
+    st.download_button(
+        "Download combined CSV",
+        master_df.to_csv(index=False),
+        file_name="combined_comments_all_regions.csv"
+    )
+
+    # 7b) Call your sentiment+topic API
+    payload = {
+        "comments": master_df["Comment"].tolist(),
+        "threshold": 0.65,
+        "topics": st.session_state.topics,
+        "contexts": st.session_state.contexts
+    }
+    st.write("Running sentiment & topic classification…")
+    try:
+        res = requests.post(API_URL, json=payload)
+        res.raise_for_status()
+        out = pd.DataFrame(res.json())
+        result = pd.concat([master_df.reset_index(drop=True), out], axis=1)
+
+        st.subheader("🔍 Results")
+        st.dataframe(result.head())
+
+        st.download_button(
+            "Download final classified CSV",
+            result.to_csv(index=False),
+            file_name="classified_comments_all_regions.csv"
+        )
+
+    except Exception as e:
+        st.error(f"Failed to classify: {e}")
