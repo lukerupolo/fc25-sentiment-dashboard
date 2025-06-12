@@ -4,6 +4,10 @@ import requests
 import openai
 import os
 
+# Ensure helper summary functions are imported or defined
+# Replace the following imports with your actual module paths if needed
+from your_summary_module import generate_region_summary_name, generate_actionable_summary_openai
+
 # Set your OpenAI API key from Streamlit secrets
 try:
     openai.api_key = st.secrets["openai_api_key"]
